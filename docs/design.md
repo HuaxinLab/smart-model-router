@@ -255,6 +255,7 @@ AI 回复内容...
 1. `before_tool_call` 捕获 `sessions_spawn(model=...)` 的子模型名，并记录触发委派的主模型名
 2. `message_sending` 在发出前强制规范化尾部标签（先移除已有 `(via ⚙️ ...)`，再追加新标签）
 3. 委派回传场景使用短时 pending 缓存，处理 `sessionKey` 缺失/变化的情况
+4. `subagent_ended` watchdog：子任务 `error/timeout/killed/reset` 时记录失败状态，主会话下一轮强制补发失败回执，避免静默
 
 #### 关键实现细节
 
@@ -376,6 +377,7 @@ openclaw config set plugins.entries.smart-model-router.hooks.allowPromptInjectio
 | 关键词误匹配 | 聊天提到"代码"但不是代码任务 | 关键词选择要具体，避免过于宽泛的词 |
 | 目标模型 API 不可用 | 路由后调用失败 | OpenClaw 自带 fallback 链，路由失败自动回退默认模型 |
 | 委派回传时 sessionKey 变化或缺失 | 标注回退为默认模型 | 使用 `before_tool_call` 记录委派链路 + 短时 pending 缓存 + `message_sending` 强制改写 |
+| 子任务中断后主会话静默 | 用户看不到任务最终状态 | 监听 `subagent_ended`，失败时自动注入“失败回执”强制回复 |
 | 别名冲突（别名跟正常聊天词汇重叠） | "用 kimi 模型"误匹配普通句子 | 显式指定要求"用xxx模型"的固定句式，不会误触 |
 
 ## 十一、文件结构（预期）

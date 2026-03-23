@@ -126,6 +126,7 @@ AI 回复内容...
 - 默认模型也标注
 - 由 `message_sending` 钩子在代码层强制改写，避免依赖模型遵循指令
 - 仅模糊规则依赖 prompt 注入（`appendSystemContext`），因此仅模糊规则需要 `allowPromptInjection: true`
+- 内置委派失败防静默 watchdog：子任务 `error/timeout/killed/reset` 时，主会话会自动补一条失败回执
 
 ### 技术架构
 
@@ -176,8 +177,22 @@ npm test
 | 规则命中但没切模型 | `currentMatchResult` 闭包问题 | 确认使用最新版本（模块级变量） |
 | 模糊规则不生效 | `allowPromptInjection` 未设置 | `openclaw config set plugins.entries.smart-model-router.hooks.allowPromptInjection true` |
 | 委派后标注仍是主模型 | 使用旧插件版本 | 更新到最新版本（`message_sending` 强制改写标签） |
+| 委派后无任何后续消息 | 子任务中断/超时 | 更新到最新版本（`subagent_ended` watchdog 会自动补失败回执） |
 | 标注不显示（旧版本） | OpenClaw 版本过低 | 升级到 2026.3.10+ |
 | 模型切换报错 | 目标 Provider 未配置 | `/route models` 确认模型可用 |
+
+### 委派失败验证（watchdog）
+
+可用以下流程验证“防静默”：
+
+```bash
+# 1) 先触发一次委派（看到“已委派给 ... 处理”）
+# 2) 立刻发送 /abort 中断
+```
+
+预期会收到两条后续消息：
+- 中断确认（如“已中止子代理任务”）
+- 自动失败回执（如“抱歉，子任务执行失败（subagent-killed）...”）
 
 ### 许可证
 

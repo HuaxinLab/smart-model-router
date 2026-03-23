@@ -23,6 +23,10 @@
 用户: 今天天气怎么样
   → 没命中任何规则 → 使用默认模型
   → 回复末尾标注 (via ⚙️ glm-5)
+
+用户: [发图片] 帮我识别这张图里的文字
+  → 模糊规则命中，委派给 kimi-k2.5
+  → 回复末尾标注 (via ⚙️ kimi-k2.5 -> glm-5)
 ```
 
 主模型不切换，任务完成后自动恢复。每条消息独立路由。
@@ -44,7 +48,7 @@
 git clone https://github.com/yourname/smart-model-router.git
 openclaw plugins install smart-model-router/plugin
 
-# 启用 prompt 注入（模型标注和模糊规则需要）
+# 启用 prompt 注入（仅模糊规则需要）
 openclaw config set plugins.entries.smart-model-router.hooks.allowPromptInjection true
 
 # 重启网关
@@ -108,7 +112,7 @@ use kimi model
 
 ### 模型标注
 
-每条回复末尾自动标注当前使用的模型：
+每条回复末尾自动标注模型：
 
 ```
 AI 回复内容...
@@ -116,9 +120,12 @@ AI 回复内容...
 (via ⚙️ coder)
 ```
 
+- 精确匹配/默认回复：`(via ⚙️ <当前模型>)`
+- 子 agent 委派后回复：`(via ⚙️ <子模型> -> <主模型>)`
 - 有别名显示别名，无别名显示模型名
 - 默认模型也标注
-- 通过 `prependContext` 注入指令实现，需要 `allowPromptInjection: true`
+- 由 `message_sending` 钩子在代码层强制改写，避免依赖模型遵循指令
+- 仅模糊规则依赖 prompt 注入（`appendSystemContext`），因此仅模糊规则需要 `allowPromptInjection: true`
 
 ### 技术架构
 
@@ -126,9 +133,9 @@ AI 回复内容...
 |------|------|------|
 | `/route` 命令 | `api.registerCommand()` | 规则管理，绕过 AI，零 token |
 | 精确路由 | `before_model_resolve` 钩子（priority 100） | 关键词匹配 + 用户显式指定 |
-| 模型标注 | `before_prompt_build` + `prependContext` | 注入标注指令 |
+| 模型标注 | `before_tool_call` + `message_sending` | 捕获委派模型并在发送前强制改写标注 |
 | 模糊规则 | `before_prompt_build` + `appendSystemContext` | 注入模糊规则让 AI 判断 |
-| 内存缓存 | 模块级变量 | 热路径零磁盘 I/O |
+| 内存缓存 | 模块级状态 + 短时 pending 缓存 | 热路径零磁盘 I/O |
 
 零外部依赖，约 350 行 TypeScript。
 
@@ -167,7 +174,8 @@ npm test
 |------|------|------|
 | `/route` 命令无响应 | 插件未加载 | `openclaw plugins list` 检查，确认 `plugins.allow` 包含 `smart-model-router` |
 | 规则命中但没切模型 | `currentMatchResult` 闭包问题 | 确认使用最新版本（模块级变量） |
-| 标注不显示 | `allowPromptInjection` 未设置 | `openclaw config set plugins.entries.smart-model-router.hooks.allowPromptInjection true` |
+| 模糊规则不生效 | `allowPromptInjection` 未设置 | `openclaw config set plugins.entries.smart-model-router.hooks.allowPromptInjection true` |
+| 委派后标注仍是主模型 | 使用旧插件版本 | 更新到最新版本（`message_sending` 强制改写标签） |
 | 标注不显示（旧版本） | OpenClaw 版本过低 | 升级到 2026.3.10+ |
 | 模型切换报错 | 目标 Provider 未配置 | `/route models` 确认模型可用 |
 
@@ -181,7 +189,7 @@ MIT
 
 ## English
 
-An OpenClaw plugin that automatically selects the best model based on message content. Supports keyword-based exact matching, explicit user requests, and natural language fuzzy rules. Every reply is labeled with the model name.
+An OpenClaw plugin that automatically selects the best model based on message content. Supports keyword-based exact matching, explicit user requests, and natural language fuzzy rules. Every reply is labeled with model routing info.
 
 ### How It Works
 
@@ -196,6 +204,10 @@ User: This code has a bug
 User: What's the weather today?
   → No rule matched → uses default model
   → Reply labeled (via ⚙️ glm-5)
+
+User: [send image] OCR this screenshot
+  → Fuzzy rule matched, delegated to kimi-k2.5
+  → Reply labeled (via ⚙️ kimi-k2.5 -> glm-5)
 ```
 
 ### Three Routing Modes
@@ -246,7 +258,10 @@ AI response...
 (via ⚙️ coder)
 ```
 
-Implemented via `before_prompt_build` + `prependContext`. Requires `allowPromptInjection: true`.
+- Direct/default reply: `(via ⚙️ <model>)`
+- Delegated reply: `(via ⚙️ <subagent-model> -> <requester-model>)`
+- Implemented via `before_tool_call` + `message_sending` with forced tail-label rewrite.
+- `allowPromptInjection: true` is only required for fuzzy rules, not for labeling itself.
 
 ### Testing
 

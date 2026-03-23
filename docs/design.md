@@ -1,7 +1,7 @@
 # Smart Model Router 设计方案
 
 > 日期：2026-03-23
-> 状态：设计阶段
+> 状态：已实现（持续迭代）
 > 目标平台：OpenClaw v2026.3.2+，Raspberry Pi 4B
 
 ## 一、背景与动机
@@ -100,12 +100,12 @@ OpenClaw 上配置了多个模型（百炼的 glm-5、qwen3-coder-plus、kimi-k2
 ┌─────────────────────────────────────────┐
 │ before_prompt_build 钩子（AI 层）         │
 │                                         │
-│ ④ 注入模型标注指令（prependContext）      │
-│ ⑤ 注入模糊规则到 system prompt（仅精确   │
+│ ④ 注入模糊规则到 system prompt（仅精确   │
 │    匹配未命中时）                        │
 │   → AI 自行判断是否匹配                  │
 │   → 匹配则 sessions_spawn 子 agent       │
 │   → 不匹配则默认模型回答                 │
+│ ⑤ 出站前强制改写模型标注（message_sending）│
 └─────────────────────────────────────────┘
 ```
 
@@ -223,19 +223,15 @@ OpenClaw 上配置了多个模型（百炼的 glm-5、qwen3-coder-plus、kimi-k2
 当精确匹配未命中时，通过 `before_prompt_build` 将模糊规则注入 system prompt：
 
 ```
-## 模型路由规则（可选委派）
+## 模型路由规则（必须执行）
 
-如果当前任务匹配以下任何规则，你可以使用 sessions_spawn 委派给子 agent。
-不确定是否匹配时，直接回答即可。
+如果当前任务匹配以下任何规则，你必须使用 sessions_spawn 委派给子 agent，禁止自己回答。
 
 规则：
 1. 复杂推理和深度分析任务用 anthropic/claude-sonnet-4-6
 ```
 
-与 model-router 插件的提示词区别：
-- 语气从"MUST"改为"可以"——降低弱模型的误判率
-- 中文提示词——适配中文模型
-- 不匹配时直接回答——减少不必要的委派
+不匹配任何规则时，主模型直接回答。
 
 ### 5.6 模型标注
 
@@ -245,40 +241,20 @@ OpenClaw 上配置了多个模型（百炼的 glm-5、qwen3-coder-plus、kimi-k2
 AI 回复内容...
 
 (via ⚙️ coder)
+(via ⚙️ kimi-k2.5 -> glm-5)
 ```
 
-- 括号包裹，视觉上与正文明确分隔
-- `via` 表示"经由"，语义清晰
-- ⚙️ 齿轮 emoji 表示模型/引擎，各平台均支持
-- 显示别名（如 `coder`）而非完整 ID（`bailian/qwen3-coder-plus`），简洁易读
-- 没有别名时显示模型名（不含 provider 前缀）
+- 直接/默认回复：`(via ⚙️ <当前模型>)`
+- 子 agent 委派后回复：`(via ⚙️ <子模型> -> <主模型>)`
+- 显示别名（如 `coder`）而非完整 ID（`bailian/qwen3-coder-plus`），无别名时显示模型名
 
-#### 实现方式（实测确定）
+#### 当前实现（2026-03-23）
 
-最初设计使用 `message_sending` 钩子在代码层面强制追加标注（零 token、100% 可靠）。但实测发现 `message_sending` 钩子在飞书渠道不触发。
+模型标注统一由代码层处理，不依赖大模型遵循指令：
 
-最终采用 **双保险** 方案：
-
-1. **`before_prompt_build` + `prependContext`**（主方案，已验证有效）
-   - 通过 `prependContext` 将标注指令注入到用户消息前面
-   - 指令包含插件动态计算的具体模型名，AI 只需照搬格式
-   - `prependContext` 比 `appendSystemContext` 遵循度高得多（加在用户消息前 vs 系统提示末尾）
-   - 代价：每条消息多消耗约 30 个 token
-   - 需要 `allowPromptInjection: true`（OpenClaw 2026.3.10+）
-
-2. **`message_sending` 钩子**（备选，代码中保留）
-   - 在消息发出前代码层面追加标注
-   - 零 token 消耗、100% 可靠
-   - 当前飞书渠道不触发；其他渠道（Telegram/微信等）可能有效
-   - 两个方案同时存在不冲突——如果 `message_sending` 触发了会追加一次，`prependContext` 让 AI 也追加一次，内容一致
-
-#### 实测踩坑记录
-
-| 尝试 | 结果 | 原因 |
-|------|------|------|
-| `message_sending` 钩子修改 `event.content` | 钩子没触发 | 飞书渠道的出站路径不调用此钩子 |
-| `before_prompt_build` + `appendSystemContext` | AI 忽略了指令 | 弱模型对 system prompt 末尾追加的指令遵循度不够 |
-| `before_prompt_build` + `prependContext` | ✅ 有效 | 指令加在用户消息前面，模型遵循度高 |
+1. `before_tool_call` 捕获 `sessions_spawn(model=...)` 的子模型名，并记录触发委派的主模型名
+2. `message_sending` 在发出前强制规范化尾部标签（先移除已有 `(via ⚙️ ...)`，再追加新标签）
+3. 委派回传场景使用短时 pending 缓存，处理 `sessionKey` 缺失/变化的情况
 
 #### 关键实现细节
 
@@ -304,6 +280,7 @@ openclaw config set plugins.entries.smart-model-router.hooks.allowPromptInjectio
 ```
 
 如果只使用精确规则和用户显式指定，**不需要** `allowPromptInjection`。
+模型标注本身由 `message_sending` 完成，也不依赖 `allowPromptInjection`。
 
 ### 目标模型的 Provider 必须已配置
 
@@ -365,6 +342,7 @@ openclaw config set plugins.entries.smart-model-router.hooks.allowPromptInjectio
 → 模糊规则注入 system prompt
 → AI 判断"设计分布式架构"属于"深入推理的复杂问题"
 → spawn 子 agent 用 claude 处理（无历史上下文，但这个任务本身是独立的）
+→ 最终回复标注 (via ⚙️ claude-sonnet-4-6 -> glm-5)
 ```
 
 ## 九、开发计划
@@ -397,7 +375,7 @@ openclaw config set plugins.entries.smart-model-router.hooks.allowPromptInjectio
 | 弱模型不会调 sessions_spawn | 模糊规则失效 | 有精确规则兜底，模糊规则定位为可选增强 |
 | 关键词误匹配 | 聊天提到"代码"但不是代码任务 | 关键词选择要具体，避免过于宽泛的词 |
 | 目标模型 API 不可用 | 路由后调用失败 | OpenClaw 自带 fallback 链，路由失败自动回退默认模型 |
-| message_sending 钩子无法获取当前模型 | 标注功能失效 | 需要验证钩子上下文中是否有模型信息，否则用闭包传递 |
+| 委派回传时 sessionKey 变化或缺失 | 标注回退为默认模型 | 使用 `before_tool_call` 记录委派链路 + 短时 pending 缓存 + `message_sending` 强制改写 |
 | 别名冲突（别名跟正常聊天词汇重叠） | "用 kimi 模型"误匹配普通句子 | 显式指定要求"用xxx模型"的固定句式，不会误触 |
 
 ## 十一、文件结构（预期）

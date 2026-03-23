@@ -30,11 +30,13 @@ type SessionState = {
   currentMatchResult: MatchResult | null;
   delegatedThisRound: boolean;
   delegatedModelName: string;
+  requesterModelName: string;
 };
 
 const SESSION_FALLBACK_KEY = "__global__";
 const sessionStateMap = new Map<string, SessionState>();
 let pendingDelegatedLabel = "";
+let pendingRequesterLabel = "";
 let pendingDelegatedUntil = 0;
 
 const CONFIG_PATH = join(
@@ -259,6 +261,7 @@ function getSessionState(ctx: any): SessionState {
     currentMatchResult: null,
     delegatedThisRound: false,
     delegatedModelName: "",
+    requesterModelName: "",
   };
   sessionStateMap.set(key, created);
   return created;
@@ -271,6 +274,7 @@ function clearSessionState(key: string): void {
       state.currentMatchResult = null;
       state.delegatedThisRound = false;
       state.delegatedModelName = "";
+      state.requesterModelName = "";
     }
     return;
   }
@@ -343,9 +347,10 @@ export default {
       (event: any, ctx: any) => {
         const key = getSessionKey(ctx);
         const state = getSessionState(ctx);
-        state.currentMatchResult = null;
-        state.delegatedThisRound = false;
-        state.delegatedModelName = "";
+    state.currentMatchResult = null;
+    state.delegatedThisRound = false;
+    state.delegatedModelName = "";
+    state.requesterModelName = "";
 
         const prompt = event?.prompt ?? "";
         if (!prompt) return undefined;
@@ -426,8 +431,12 @@ export default {
             ? { provider: model.slice(0, slashIdx), model: model.slice(slashIdx + 1) }
             : { provider: "", model };
           state.delegatedModelName = getDisplayLabel(ref, cache.data.aliases);
+          state.requesterModelName = state.currentMatchResult
+            ? getDisplayLabel(state.currentMatchResult.ref, cache.data.aliases)
+            : getDefaultLabel(api, cache.data.aliases);
           state.delegatedThisRound = true;
           pendingDelegatedLabel = state.delegatedModelName;
+          pendingRequesterLabel = state.requesterModelName;
           pendingDelegatedUntil = Date.now() + 2 * 60 * 1000;
           dbg(`→ captured model: ${state.delegatedModelName}`);
         }
@@ -449,18 +458,22 @@ export default {
         }
 
         const fallbackDelegatedLabel = Date.now() <= pendingDelegatedUntil ? pendingDelegatedLabel : "";
+        const fallbackRequesterLabel = Date.now() <= pendingDelegatedUntil ? pendingRequesterLabel : "";
+        const requesterLabel = state.requesterModelName || fallbackRequesterLabel;
         const label = state.delegatedModelName
           || fallbackDelegatedLabel
           || (state.currentMatchResult
             ? getDisplayLabel(state.currentMatchResult.ref, cache.data.aliases)
             : getDefaultLabel(api, cache.data.aliases));
+        const viaLabel = requesterLabel ? `${label} -> ${requesterLabel}` : label;
 
         const normalizedContent = content.replace(/\n*\(via ⚙️ [^)]+\)\s*$/u, "").trimEnd();
-        dbg(`message_sending: session=${sessionKey} force label=${label} delegated=${state.delegatedModelName || "none"} pending=${fallbackDelegatedLabel || "none"}`);
+        dbg(`message_sending: session=${sessionKey} force label=${viaLabel} delegated=${state.delegatedModelName || "none"} pending=${fallbackDelegatedLabel || "none"}`);
         pendingDelegatedLabel = "";
+        pendingRequesterLabel = "";
         pendingDelegatedUntil = 0;
         clearSessionState(sessionKey);
-        return { content: `${normalizedContent}\n\n(via ⚙️ ${label})` };
+        return { content: `${normalizedContent}\n\n(via ⚙️ ${viaLabel})` };
       },
       { priority: -100 },
     );

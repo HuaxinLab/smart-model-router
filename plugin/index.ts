@@ -34,6 +34,8 @@ type SessionState = {
 
 const SESSION_FALLBACK_KEY = "__global__";
 const sessionStateMap = new Map<string, SessionState>();
+let pendingDelegatedLabel = "";
+let pendingDelegatedUntil = 0;
 
 const CONFIG_PATH = join(
   homedir(),
@@ -372,13 +374,16 @@ export default {
         const sessionKey = getSessionKey(ctx);
         const state = getSessionState(ctx);
         const isSubagent = sessionKey.includes("subagent:");
+        const fallbackDelegatedLabel = Date.now() <= pendingDelegatedUntil ? pendingDelegatedLabel : "";
 
         // Model label
-        const label = state.currentMatchResult
+        const label = state.delegatedModelName
+          || fallbackDelegatedLabel
+          || (state.currentMatchResult
           ? getDisplayLabel(state.currentMatchResult.ref, cache.data.aliases)
-          : getDefaultLabel(api, cache.data.aliases);
+          : getDefaultLabel(api, cache.data.aliases));
 
-        dbg(`before_prompt_build: session=${sessionKey} isSubagent=${isSubagent} delegated=${state.delegatedThisRound} label=${label}`);
+        dbg(`before_prompt_build: session=${sessionKey} isSubagent=${isSubagent} delegated=${state.delegatedThisRound} pending=${fallbackDelegatedLabel || "none"} label=${label}`);
 
         if (isSubagent) {
           dbg("→ subagent: pass through");
@@ -389,6 +394,13 @@ export default {
           state.delegatedThisRound = false;
           dbg(`→ forwarding: skip`);
           return undefined;
+        }
+
+        if (fallbackDelegatedLabel) {
+          dbg(`→ forwarding by pending label: inject (via ⚙️ ${fallbackDelegatedLabel})`);
+          return {
+            prependContext: `在回复最末尾加 (via ⚙️ ${fallbackDelegatedLabel})`,
+          };
         }
 
         // Normal: prependContext with label (will pollute task for subagent — intended)
@@ -419,6 +431,8 @@ export default {
             : { provider: "", model };
           state.delegatedModelName = getDisplayLabel(ref, cache.data.aliases);
           state.delegatedThisRound = true;
+          pendingDelegatedLabel = state.delegatedModelName;
+          pendingDelegatedUntil = Date.now() + 2 * 60 * 1000;
           dbg(`→ captured model: ${state.delegatedModelName}`);
         }
         return undefined;
@@ -440,15 +454,21 @@ export default {
 
         const hasTag = /\(via ⚙️ [^)]+\)\s*$/.test(content.trim());
         if (hasTag) {
+          pendingDelegatedLabel = "";
+          pendingDelegatedUntil = 0;
           clearSessionState(sessionKey);
           return undefined;
         }
 
+        const fallbackDelegatedLabel = Date.now() <= pendingDelegatedUntil ? pendingDelegatedLabel : "";
         const label = state.delegatedModelName
+          || fallbackDelegatedLabel
           || (state.currentMatchResult
             ? getDisplayLabel(state.currentMatchResult.ref, cache.data.aliases)
             : getDefaultLabel(api, cache.data.aliases));
 
+        pendingDelegatedLabel = "";
+        pendingDelegatedUntil = 0;
         clearSessionState(sessionKey);
         return { content: `${content}\n\n(via ⚙️ ${label})` };
       },

@@ -397,21 +397,17 @@ export default {
         }
 
         if (fallbackDelegatedLabel) {
-          dbg(`→ forwarding by pending label: inject (via ⚙️ ${fallbackDelegatedLabel})`);
-          return {
-            prependContext: `在回复最末尾加 (via ⚙️ ${fallbackDelegatedLabel})`,
-          };
+          dbg(`→ forwarding by pending label: skip prompt label injection`);
+          return undefined;
         }
 
-        // Normal: prependContext with label (will pollute task for subagent — intended)
-        dbg(`→ normal: inject (via ⚙️ ${label})`);
-        const result: any = {
-          prependContext: `在回复最末尾加 (via ⚙️ ${label})`,
-        };
+        // message_sending-only mode: do not rely on model following label instructions
+        dbg(`→ normal: no prompt label injection`);
+        const result: any = {};
         if (!state.currentMatchResult && cache.fuzzyPrompt) {
           result.appendSystemContext = cache.fuzzyPrompt;
         }
-        return result;
+        return Object.keys(result).length > 0 ? result : undefined;
       },
       { priority: 0 },
     );
@@ -452,14 +448,6 @@ export default {
           return undefined;
         }
 
-        const hasTag = /\(via ⚙️ [^)]+\)\s*$/.test(content.trim());
-        if (hasTag) {
-          pendingDelegatedLabel = "";
-          pendingDelegatedUntil = 0;
-          clearSessionState(sessionKey);
-          return undefined;
-        }
-
         const fallbackDelegatedLabel = Date.now() <= pendingDelegatedUntil ? pendingDelegatedLabel : "";
         const label = state.delegatedModelName
           || fallbackDelegatedLabel
@@ -467,10 +455,12 @@ export default {
             ? getDisplayLabel(state.currentMatchResult.ref, cache.data.aliases)
             : getDefaultLabel(api, cache.data.aliases));
 
+        const normalizedContent = content.replace(/\n*\(via ⚙️ [^)]+\)\s*$/u, "").trimEnd();
+        dbg(`message_sending: session=${sessionKey} force label=${label} delegated=${state.delegatedModelName || "none"} pending=${fallbackDelegatedLabel || "none"}`);
         pendingDelegatedLabel = "";
         pendingDelegatedUntil = 0;
         clearSessionState(sessionKey);
-        return { content: `${content}\n\n(via ⚙️ ${label})` };
+        return { content: `${normalizedContent}\n\n(via ⚙️ ${label})` };
       },
       { priority: -100 },
     );

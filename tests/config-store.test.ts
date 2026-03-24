@@ -62,7 +62,22 @@ describe("exact rules", () => {
 
     const data = loadConfigSync(configPath);
     expect(data.exactRules).toHaveLength(1);
-    expect(data.exactRules[0].id).toBe(2);
+    expect(data.exactRules[0].id).toBe(1);
+  });
+
+  it("keeps exact rule IDs contiguous after deletes", () => {
+    addExactRule(configPath, ["a"], "x");
+    addExactRule(configPath, ["b"], "y");
+    addExactRule(configPath, ["c"], "z");
+
+    expect(removeExactRule(configPath, 2)).toBe(true);
+    let data = loadConfigSync(configPath);
+    expect(data.exactRules.map((r) => r.id)).toEqual([1, 2]);
+
+    expect(removeExactRule(configPath, 2)).toBe(true);
+    data = loadConfigSync(configPath);
+    expect(data.exactRules).toHaveLength(1);
+    expect(data.exactRules[0].id).toBe(1);
   });
 });
 
@@ -76,6 +91,21 @@ describe("fuzzy rules", () => {
 
     expect(removeFuzzyRule(configPath, 1)).toBe(true);
     expect(loadConfigSync(configPath).fuzzyRules).toHaveLength(0);
+  });
+
+  it("keeps fuzzy rule IDs contiguous after deletes", () => {
+    addFuzzyRule(configPath, "规则1");
+    addFuzzyRule(configPath, "规则2");
+    addFuzzyRule(configPath, "规则3");
+
+    expect(removeFuzzyRule(configPath, 2)).toBe(true);
+    let data = loadConfigSync(configPath);
+    expect(data.fuzzyRules.map((r) => r.id)).toEqual([1, 2]);
+
+    expect(removeFuzzyRule(configPath, 2)).toBe(true);
+    data = loadConfigSync(configPath);
+    expect(data.fuzzyRules).toHaveLength(1);
+    expect(data.fuzzyRules[0].id).toBe(1);
   });
 });
 

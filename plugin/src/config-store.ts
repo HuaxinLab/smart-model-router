@@ -42,6 +42,10 @@ export function loadConfigSync(filePath: string): ConfigData {
 }
 
 function save(filePath: string, data: ConfigData): void {
+  // Keep rule IDs contiguous and aligned with list order so `/route ls`
+  // numbering always matches subsequent `/route rm <id>` operations.
+  data.exactRules = data.exactRules.map((rule, index) => ({ ...rule, id: index + 1 }));
+  data.fuzzyRules = data.fuzzyRules.map((rule, index) => ({ ...rule, id: index + 1 }));
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
 }

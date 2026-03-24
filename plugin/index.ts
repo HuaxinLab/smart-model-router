@@ -35,6 +35,7 @@ type SessionState = {
 
 const SESSION_FALLBACK_KEY = "__global__";
 const sessionStateMap = new Map<string, SessionState>();
+const subagentFailureNoticeBySession = new Map<string, string>();
 let pendingDelegatedLabel = "";
 let pendingRequesterLabel = "";
 let pendingDelegatedUntil = 0;
@@ -380,6 +381,18 @@ export default {
         const state = getSessionState(ctx);
         const isSubagent = sessionKey.includes("subagent:");
         const fallbackDelegatedLabel = Date.now() <= pendingDelegatedUntil ? pendingDelegatedLabel : "";
+        const failureNotice = subagentFailureNoticeBySession.get(sessionKey);
+
+        if (!isSubagent && failureNotice) {
+          subagentFailureNoticeBySession.delete(sessionKey);
+          dbg(`before_prompt_build: session=${sessionKey} inject failure notice=${failureNotice}`);
+          return {
+            prependContext:
+              `子任务执行失败（${failureNotice}）。请你立即直接回复用户：` +
+              `"抱歉，子任务执行失败（${failureNotice}）。请重试，或明确指定模型后再试。"` +
+              "不要调用任何工具，不要继续委派。",
+          };
+        }
 
         // Model label
         const label = state.delegatedModelName
@@ -406,16 +419,57 @@ export default {
           return undefined;
         }
 
-        // message_sending-only mode: do not rely on model following label instructions
-        dbg(`→ normal: no prompt label injection`);
+        const labelInstruction =
+          `输出约束（必须遵守）：你的最终回复最后一行必须是：(via ⚙️ ${label})。` +
+          "不得缺失，不得改写该格式，不得重复添加多个 via。";
+        dbg(`→ normal: inject prompt label fallback=${label}`);
         const result: any = {};
+        result.prependContext = labelInstruction;
         if (!state.currentMatchResult && cache.fuzzyPrompt) {
-          result.appendSystemContext = cache.fuzzyPrompt;
+          result.prependContext = `${labelInstruction}\n\n${cache.fuzzyPrompt}`;
         }
         return Object.keys(result).length > 0 ? result : undefined;
       },
       { priority: 0 },
     );
+
+    // ── Hook 2.5: subagent_ended (failure watchdog, optional) ──────
+    // Some OpenClaw versions may not expose this hook yet. Keep router
+    // functionality (route + labeling) alive even when this hook is unavailable.
+    try {
+      api.on(
+        "subagent_ended",
+        (event: any, ctx: any) => {
+          const requesterSessionKey = String(ctx?.requesterSessionKey ?? "").trim().toLowerCase();
+          if (!requesterSessionKey) return;
+
+          const outcome = String(event?.outcome ?? "").toLowerCase();
+          if (!outcome || outcome === "ok") {
+            subagentFailureNoticeBySession.delete(requesterSessionKey);
+            dbg(`subagent_ended: requester=${requesterSessionKey} outcome=ok clear`);
+            return;
+          }
+
+          if (
+            outcome === "error" ||
+            outcome === "timeout" ||
+            outcome === "killed" ||
+            outcome === "reset"
+          ) {
+            const reason = String(event?.reason ?? event?.error ?? outcome).slice(0, 80);
+            subagentFailureNoticeBySession.set(requesterSessionKey, reason);
+            dbg(
+              `subagent_ended: requester=${requesterSessionKey} outcome=${outcome} reason=${reason}`,
+            );
+          }
+        },
+        { priority: 50 },
+      );
+    } catch (err) {
+      dbg(
+        `subagent_ended hook unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // ── Hook 3: before_tool_call (capture delegation model) ─────────────
     api.on(

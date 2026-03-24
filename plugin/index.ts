@@ -13,8 +13,10 @@ import {
   loadConfigSync,
   addExactRule,
   removeExactRule,
+  updateExactRule,
   addFuzzyRule,
   removeFuzzyRule,
+  updateFuzzyRule,
   setAlias,
   removeAlias,
   clearAll,
@@ -65,6 +67,14 @@ function splitBySeparator(text: string): [string, string] | null {
   return null;
 }
 
+function parseKeywordsList(raw: string): string[] {
+  return raw
+    .replaceAll("，", ",")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
 // ── Format Helpers ──────────────────────────────────────────────────────────
 
 function formatExactRule(rule: { id: number; keywords: string[]; target: string }): string {
@@ -84,7 +94,10 @@ function formatAlias(name: string, ref: ModelRef): string {
 function handleRouteCommand(
   args: string,
   cache: { data: ConfigData; fuzzyPrompt: string },
-  getModels?: () => string[],
+  helpers?: {
+    getModels?: () => string[];
+    getBuiltinAliases?: () => Record<string, ModelRef>;
+  },
 ): { text: string } {
   const trimmed = args.trim();
   const spaceIdx = trimmed.indexOf(" ");
@@ -94,10 +107,32 @@ function handleRouteCommand(
   switch (sub.toLowerCase()) {
     // ── /route models ───────────────────────────────────────────────
     case "models": {
-      if (!getModels) return { text: "无法获取模型列表" };
-      const models = getModels();
+      if (!helpers?.getModels) return { text: "无法获取模型列表" };
+      const models = helpers.getModels();
       if (models.length === 0) return { text: "未找到可用模型。请检查 openclaw.json 的 models.providers 配置。" };
-      return { text: `可用模型：\n${models.map((m) => `  ${m}`).join("\n")}` };
+      const pluginAliases = cache.data.aliases;
+      const builtinAliases = helpers.getBuiltinAliases ? helpers.getBuiltinAliases() : {};
+
+      const aliasByTarget = new Map<string, string[]>();
+      const pushAlias = (target: string, alias: string) => {
+        const list = aliasByTarget.get(target) ?? [];
+        if (!list.includes(alias)) list.push(alias);
+        aliasByTarget.set(target, list);
+      };
+
+      for (const [alias, ref] of Object.entries(builtinAliases)) {
+        pushAlias(`${ref.provider}/${ref.model}`.toLowerCase(), `${alias}(openclaw)`);
+      }
+      for (const [alias, ref] of Object.entries(pluginAliases)) {
+        pushAlias(`${ref.provider}/${ref.model}`.toLowerCase(), `${alias}(route)`);
+      }
+
+      const lines = models.map((m) => {
+        const aliases = aliasByTarget.get(m.toLowerCase()) ?? [];
+        if (aliases.length === 0) return `  ${m}`;
+        return `  ${m}  [别名: ${aliases.join(", ")}]`;
+      });
+      return { text: `可用模型：\n${lines.join("\n")}` };
     }
 
     // ── /route add <keywords> = <target> ────────────────────────────
@@ -109,7 +144,7 @@ function handleRouteCommand(
       if (!parts || !parts[0] || !parts[1]) {
         return { text: "格式错误，需要用 = 或 -> 分隔关键词和目标模型\n示例: /route add 代码,code = coder" };
       }
-      const keywords = parts[0].split(",").map((k) => k.trim()).filter(Boolean);
+      const keywords = parseKeywordsList(parts[0]);
       if (keywords.length === 0) {
         return { text: "至少需要一个关键词" };
       }
@@ -119,10 +154,60 @@ function handleRouteCommand(
       return { text: `已添加精确规则 #${rule.id}: [${keywords.join(", ")}] = ${target}` };
     }
 
-    // ── /route ai <text> ────────────────────────────────────────────
+    // ── /route set <id> <keywords> = <target> ───────────────────────
+    case "set": {
+      if (!rest) {
+        return {
+          text:
+            "用法: /route set <编号> 关键词1,关键词2 = 模型别名\n" +
+            "示例: /route set 1 代码,code,bug,脚本,编程 = coder",
+        };
+      }
+      const match = rest.match(/^(\d+)\s+([\s\S]+)$/);
+      if (!match) {
+        return { text: "用法: /route set <编号> 关键词1,关键词2 = 模型别名" };
+      }
+      const id = Number.parseInt(match[1], 10);
+      const payload = match[2].trim();
+      const parts = splitBySeparator(payload);
+      if (!parts || !parts[0] || !parts[1]) {
+        return {
+          text:
+            "格式错误，需要用 = 或 -> 分隔关键词和目标模型\n" +
+            "示例: /route set 1 代码,code,bug,脚本,编程 = coder",
+        };
+      }
+      const keywords = parseKeywordsList(parts[0]);
+      if (keywords.length === 0) {
+        return { text: "至少需要一个关键词" };
+      }
+      const target = parts[1];
+      const updated = updateExactRule(CONFIG_PATH, id, keywords, target);
+      if (!updated) return { text: `未找到精确规则 #${id}` };
+      refreshCache(cache);
+      return { text: `已更新精确规则 #${id}: [${keywords.join(", ")}] = ${target}` };
+    }
+
+    // ── /route ai <text> / /route ai set <id> <text> ───────────────
     case "ai": {
       if (!rest) {
-        return { text: "用法: /route ai 规则描述\n示例: /route ai 复杂推理任务用 claude" };
+        return {
+          text:
+            "用法:\n" +
+            "  /route ai 规则描述\n" +
+            "  /route ai set <编号> 新规则描述\n" +
+            "示例: /route ai set 2 处理图片相关任务用 bailian/kimi-k2.5",
+        };
+      }
+      const setMatch = rest.match(/^set\s+(\d+)\s+([\s\S]+)$/i);
+      if (setMatch) {
+        const id = Number.parseInt(setMatch[1], 10);
+        const text = setMatch[2].trim();
+        if (!text) return { text: "用法: /route ai set <编号> 新规则描述" };
+        const updated = updateFuzzyRule(CONFIG_PATH, id, text);
+        if (!updated) return { text: `未找到模糊规则 #${id}` };
+        refreshCache(cache);
+        return { text: `已更新模糊规则 #${id}: ${text}` };
       }
       const rule = addFuzzyRule(CONFIG_PATH, rest);
       refreshCache(cache);
@@ -223,10 +308,12 @@ function handleRouteCommand(
       return {
         text: [
           "Smart Model Router 命令：",
-          "  /route models                 列出可用模型",
-          "  /route add 关键词 = 模型       添加精确规则",
+          "  /route models                 列出可用模型（含 openclaw/route 别名）",
+          "  /route add 关键词 = 模型       添加精确规则（支持 , 和 ，）",
+          "  /route set 编号 关键词 = 模型   修改精确规则（支持 , 和 ，）",
           "  /route ai 规则描述             添加模糊规则",
-          "  /route as 别名=provider/model  设置别名",
+          "  /route ai set 编号 规则描述     修改模糊规则",
+          "  /route as 别名=provider/model  设置 route 别名（可覆盖同名 openclaw 别名）",
           "  /route ls                     查看所有规则",
           "  /route rm <编号>              删除精确规则",
           "  /route rm ai <编号>           删除模糊规则",
@@ -235,7 +322,9 @@ function handleRouteCommand(
           "",
           "示例：",
           "  /route as coder=bailian/qwen3-coder-plus",
-          "  /route add 代码,code,bug = coder",
+          "  /route add 代码，code，bug = coder",
+          "  /route set 1 代码,code,bug,脚本,编程 = coder",
+          "  /route ai set 2 处理图片相关任务用 bailian/kimi-k2.5",
           "  /route ai 复杂推理任务用 anthropic/claude-sonnet-4-6",
         ].join("\n"),
       };
@@ -332,13 +421,42 @@ export default {
       }
     }
 
+    function getBuiltinAliases(): Record<string, ModelRef> {
+      try {
+        const models = api.config?.agents?.defaults?.models;
+        if (!models || typeof models !== "object") return {};
+        const aliases: Record<string, ModelRef> = {};
+        for (const [key, entry] of Object.entries(models as Record<string, any>)) {
+          const alias = String(entry?.alias ?? "").trim().toLowerCase();
+          if (!alias) continue;
+          const slashIdx = key.indexOf("/");
+          if (slashIdx === -1) continue;
+          const provider = key.slice(0, slashIdx).trim();
+          const model = key.slice(slashIdx + 1).trim();
+          if (!provider || !model) continue;
+          aliases[alias] = { provider, model };
+        }
+        return aliases;
+      } catch {
+        return {};
+      }
+    }
+
+    function getMergedAliases(): Record<string, ModelRef> {
+      // plugin aliases take precedence when names conflict.
+      return { ...getBuiltinAliases(), ...cache.data.aliases };
+    }
+
     // ── /route command ──────────────────────────────────────────────
     api.registerCommand({
       name: "route",
       description: "Smart Model Router: /route help",
       acceptsArgs: true,
       handler(ctx: any) {
-        return handleRouteCommand(ctx.args ?? "", cache, getModels);
+        return handleRouteCommand(ctx.args ?? "", cache, {
+          getModels,
+          getBuiltinAliases,
+        });
       },
     });
 
@@ -355,11 +473,12 @@ export default {
 
         const prompt = event?.prompt ?? "";
         if (!prompt) return undefined;
+        const mergedAliases = getMergedAliases();
 
         const match = resolveFromPrompt(
           prompt,
           cache.data.exactRules,
-          cache.data.aliases,
+          mergedAliases,
         );
         if (!match) return undefined;
 
@@ -395,11 +514,12 @@ export default {
         }
 
         // Model label
+        const mergedAliases = getMergedAliases();
         const label = state.delegatedModelName
           || fallbackDelegatedLabel
           || (state.currentMatchResult
-          ? getDisplayLabel(state.currentMatchResult.ref, cache.data.aliases)
-          : getDefaultLabel(api, cache.data.aliases));
+          ? getDisplayLabel(state.currentMatchResult.ref, mergedAliases)
+          : getDefaultLabel(api, mergedAliases));
 
         dbg(`before_prompt_build: session=${sessionKey} isSubagent=${isSubagent} delegated=${state.delegatedThisRound} pending=${fallbackDelegatedLabel || "none"} label=${label}`);
 
@@ -479,15 +599,16 @@ export default {
         const state = getSessionState(ctx);
         dbg(`before_tool_call: session=${sessionKey} toolName=${event?.toolName} model=${event?.params?.model ?? "none"}`);
         if (event?.toolName === "sessions_spawn" && event?.params?.model) {
+          const mergedAliases = getMergedAliases();
           const model = String(event.params.model);
           const slashIdx = model.indexOf("/");
           const ref: ModelRef = slashIdx !== -1
             ? { provider: model.slice(0, slashIdx), model: model.slice(slashIdx + 1) }
             : { provider: "", model };
-          state.delegatedModelName = getDisplayLabel(ref, cache.data.aliases);
+          state.delegatedModelName = getDisplayLabel(ref, mergedAliases);
           state.requesterModelName = state.currentMatchResult
-            ? getDisplayLabel(state.currentMatchResult.ref, cache.data.aliases)
-            : getDefaultLabel(api, cache.data.aliases);
+            ? getDisplayLabel(state.currentMatchResult.ref, mergedAliases)
+            : getDefaultLabel(api, mergedAliases);
           state.delegatedThisRound = true;
           pendingDelegatedLabel = state.delegatedModelName;
           pendingRequesterLabel = state.requesterModelName;
@@ -510,6 +631,7 @@ export default {
         if (!content || typeof content !== "string") {
           return undefined;
         }
+        const mergedAliases = getMergedAliases();
 
         const fallbackDelegatedLabel = Date.now() <= pendingDelegatedUntil ? pendingDelegatedLabel : "";
         const fallbackRequesterLabel = Date.now() <= pendingDelegatedUntil ? pendingRequesterLabel : "";
@@ -517,8 +639,8 @@ export default {
         const label = state.delegatedModelName
           || fallbackDelegatedLabel
           || (state.currentMatchResult
-            ? getDisplayLabel(state.currentMatchResult.ref, cache.data.aliases)
-            : getDefaultLabel(api, cache.data.aliases));
+            ? getDisplayLabel(state.currentMatchResult.ref, mergedAliases)
+            : getDefaultLabel(api, mergedAliases));
         const viaLabel = requesterLabel ? `${label} -> ${requesterLabel}` : label;
 
         const normalizedContent = content.replace(/\n*\(via ⚙️ [^)]+\)\s*$/u, "").trimEnd();

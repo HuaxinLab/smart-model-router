@@ -76,6 +76,21 @@ export function removeExactRule(filePath: string, id: number): boolean {
   return true;
 }
 
+export function updateExactRule(
+  filePath: string,
+  id: number,
+  keywords: string[],
+  target: string,
+): ExactRule | null {
+  const data = loadConfigSync(filePath);
+  const index = data.exactRules.findIndex((r) => r.id === id);
+  if (index === -1) return null;
+  data.exactRules[index] = { ...data.exactRules[index], keywords, target };
+  save(filePath, data);
+  const saved = loadConfigSync(filePath);
+  return saved.exactRules.find((r) => r.id === id) ?? null;
+}
+
 // ── Fuzzy Rules ─────────────────────────────────────────────────────────────
 
 export function addFuzzyRule(filePath: string, text: string): FuzzyRule {
@@ -93,6 +108,16 @@ export function removeFuzzyRule(filePath: string, id: number): boolean {
   data.fuzzyRules.splice(index, 1);
   save(filePath, data);
   return true;
+}
+
+export function updateFuzzyRule(filePath: string, id: number, text: string): FuzzyRule | null {
+  const data = loadConfigSync(filePath);
+  const index = data.fuzzyRules.findIndex((r) => r.id === id);
+  if (index === -1) return null;
+  data.fuzzyRules[index] = { ...data.fuzzyRules[index], text };
+  save(filePath, data);
+  const saved = loadConfigSync(filePath);
+  return saved.fuzzyRules.find((r) => r.id === id) ?? null;
 }
 
 // ── Aliases ─────────────────────────────────────────────────────────────────

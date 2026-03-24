@@ -6,8 +6,10 @@ import {
   loadConfigSync,
   addExactRule,
   removeExactRule,
+  updateExactRule,
   addFuzzyRule,
   removeFuzzyRule,
+  updateFuzzyRule,
   setAlias,
   removeAlias,
   clearAll,
@@ -79,6 +81,20 @@ describe("exact rules", () => {
     expect(data.exactRules).toHaveLength(1);
     expect(data.exactRules[0].id).toBe(1);
   });
+
+  it("updates exact rule by ID", () => {
+    addExactRule(configPath, ["代码", "code", "bug"], "coder");
+    const updated = updateExactRule(configPath, 1, ["代码", "code", "bug", "脚本", "编程"], "coder");
+    expect(updated).not.toBeNull();
+
+    const data = loadConfigSync(configPath);
+    expect(data.exactRules[0].keywords).toEqual(["代码", "code", "bug", "脚本", "编程"]);
+    expect(data.exactRules[0].target).toBe("coder");
+  });
+
+  it("returns null when updating missing exact rule", () => {
+    expect(updateExactRule(configPath, 99, ["a"], "x")).toBeNull();
+  });
 });
 
 describe("fuzzy rules", () => {
@@ -106,6 +122,19 @@ describe("fuzzy rules", () => {
     data = loadConfigSync(configPath);
     expect(data.fuzzyRules).toHaveLength(1);
     expect(data.fuzzyRules[0].id).toBe(1);
+  });
+
+  it("updates fuzzy rule by ID", () => {
+    addFuzzyRule(configPath, "处理图片相关任务用 kimi");
+    const updated = updateFuzzyRule(configPath, 1, "处理图片相关任务用 bailian/kimi-k2.5");
+    expect(updated).not.toBeNull();
+
+    const data = loadConfigSync(configPath);
+    expect(data.fuzzyRules[0].text).toBe("处理图片相关任务用 bailian/kimi-k2.5");
+  });
+
+  it("returns null when updating missing fuzzy rule", () => {
+    expect(updateFuzzyRule(configPath, 99, "x")).toBeNull();
   });
 });
 

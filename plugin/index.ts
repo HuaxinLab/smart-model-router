@@ -1,11 +1,26 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, existsSync, statSync, readFileSync, writeFileSync } from "node:fs";
 
 const DBG_PATH = join(homedir(), ".openclaw", "plugins", "smart-model-router", "debug.log");
+const DBG_MAX_BYTES = 1024 * 1024;
+const DBG_KEEP_BYTES = 256 * 1024;
+
+function rotateDebugLogIfNeeded() {
+  try {
+    if (!existsSync(DBG_PATH)) return;
+    const size = statSync(DBG_PATH).size;
+    if (size <= DBG_MAX_BYTES) return;
+    const text = readFileSync(DBG_PATH, "utf-8");
+    const tail = text.slice(-DBG_KEEP_BYTES);
+    writeFileSync(DBG_PATH, `[truncated ${new Date().toISOString()}]\n${tail}`, "utf-8");
+  } catch {}
+}
+
 function dbg(msg: string) {
   try {
     mkdirSync(join(homedir(), ".openclaw", "plugins", "smart-model-router"), { recursive: true });
+    rotateDebugLogIfNeeded();
     appendFileSync(DBG_PATH, `[${new Date().toISOString()}] ${msg}\n`);
   } catch {}
 }

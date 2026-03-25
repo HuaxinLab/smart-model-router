@@ -643,7 +643,16 @@ export default {
             : getDefaultLabel(api, mergedAliases));
         const viaLabel = requesterLabel ? `${label} -> ${requesterLabel}` : label;
 
-        const normalizedContent = content.replace(/\n*\(via ⚙️ [^)]+\)\s*$/u, "").trimEnd();
+        const viaAnywherePattern = /\(via ⚙️ [^)]+\)/u;
+        if (viaAnywherePattern.test(content)) {
+          dbg(`message_sending: session=${sessionKey} keep existing via label, skip append`);
+          pendingDelegatedLabel = "";
+          pendingRequesterLabel = "";
+          pendingDelegatedUntil = 0;
+          clearSessionState(sessionKey);
+          return undefined;
+        }
+        const normalizedContent = content.trimEnd();
         dbg(`message_sending: session=${sessionKey} force label=${viaLabel} delegated=${state.delegatedModelName || "none"} pending=${fallbackDelegatedLabel || "none"}`);
         pendingDelegatedLabel = "";
         pendingRequesterLabel = "";

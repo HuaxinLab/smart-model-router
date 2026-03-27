@@ -372,6 +372,21 @@ function getSessionState(ctx: any): SessionState {
   return created;
 }
 
+function upsertViaLabel(content: string, viaLabel: string): string {
+  const viaPattern = /\(via ⚙️ [^)]+\)/gu;
+  const hasVia = viaPattern.test(content);
+  if (!hasVia) {
+    return `${content.trimEnd()}\n\n(via ⚙️ ${viaLabel})`;
+  }
+  let replaced = false;
+  const merged = content.replace(viaPattern, () => {
+    if (replaced) return "";
+    replaced = true;
+    return `(via ⚙️ ${viaLabel})`;
+  });
+  return merged.replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
 function clearSessionState(key: string): void {
   if (key === SESSION_FALLBACK_KEY) {
     const state = sessionStateMap.get(key);
@@ -581,6 +596,10 @@ export default {
           const outcome = String(event?.outcome ?? "").toLowerCase();
           if (!outcome || outcome === "ok") {
             subagentFailureNoticeBySession.delete(requesterSessionKey);
+            pendingDelegatedLabel = "";
+            pendingRequesterLabel = "";
+            pendingDelegatedUntil = 0;
+            clearSessionState(requesterSessionKey);
             dbg(`subagent_ended: requester=${requesterSessionKey} outcome=ok clear`);
             return;
           }
@@ -593,6 +612,10 @@ export default {
           ) {
             const reason = String(event?.reason ?? event?.error ?? outcome).slice(0, 80);
             subagentFailureNoticeBySession.set(requesterSessionKey, reason);
+            pendingDelegatedLabel = "";
+            pendingRequesterLabel = "";
+            pendingDelegatedUntil = 0;
+            clearSessionState(requesterSessionKey);
             dbg(
               `subagent_ended: requester=${requesterSessionKey} outcome=${outcome} reason=${reason}`,
             );
@@ -658,22 +681,18 @@ export default {
             : getDefaultLabel(api, mergedAliases));
         const viaLabel = requesterLabel ? `${label} -> ${requesterLabel}` : label;
 
-        const viaAnywherePattern = /\(via ⚙️ [^)]+\)/u;
-        if (viaAnywherePattern.test(content)) {
-          dbg(`message_sending: session=${sessionKey} keep existing via label, skip append`);
-          pendingDelegatedLabel = "";
-          pendingRequesterLabel = "";
-          pendingDelegatedUntil = 0;
-          clearSessionState(sessionKey);
+        const hasExistingVia = /\(via ⚙️ [^)]+\)/u.test(content);
+        const hasDelegationContext = Boolean(state.delegatedModelName || fallbackDelegatedLabel);
+        if (sessionKey === SESSION_FALLBACK_KEY && hasExistingVia && !hasDelegationContext) {
+          dbg(`message_sending: session=${sessionKey} keep existing via label on global path`);
           return undefined;
         }
-        const normalizedContent = content.trimEnd();
+        const normalizedContent = upsertViaLabel(content, viaLabel);
         dbg(`message_sending: session=${sessionKey} force label=${viaLabel} delegated=${state.delegatedModelName || "none"} pending=${fallbackDelegatedLabel || "none"}`);
-        pendingDelegatedLabel = "";
-        pendingRequesterLabel = "";
-        pendingDelegatedUntil = 0;
-        clearSessionState(sessionKey);
-        return { content: `${normalizedContent}\n\n(via ⚙️ ${viaLabel})` };
+        if (!hasDelegationContext) {
+          clearSessionState(sessionKey);
+        }
+        return { content: normalizedContent };
       },
       { priority: -100 },
     );

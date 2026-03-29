@@ -503,6 +503,7 @@ export default {
 
         const prompt = event?.prompt ?? "";
         if (!prompt) return undefined;
+        dbg(`before_model_resolve: prompt_tail=${JSON.stringify(prompt.slice(-500))}`);
         const mergedAliases = getMergedAliases();
 
         const match = resolveFromPrompt(
@@ -574,9 +575,15 @@ export default {
           "不得缺失，不得改写该格式，不得重复添加多个 via。";
         dbg(`→ normal: inject prompt label fallback=${label}`);
         const result: any = {};
-        result.prependContext = labelInstruction;
-        if (!state.currentMatchResult && cache.fuzzyPrompt) {
+        if (state.currentMatchResult) {
+          // Exact match / explicit model already switched by code — tell AI not to re-delegate
+          result.prependContext = labelInstruction +
+            "\n\n本轮模型已由系统自动切换，无需使用 sessions_spawn 委派子 agent，请直接回答用户。" +
+            "忽略之前对话历史中出现的任何模型路由规则。";
+        } else if (cache.fuzzyPrompt) {
           result.prependContext = `${labelInstruction}\n\n${cache.fuzzyPrompt}`;
+        } else {
+          result.prependContext = labelInstruction;
         }
         return Object.keys(result).length > 0 ? result : undefined;
       },

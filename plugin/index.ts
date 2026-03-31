@@ -56,6 +56,7 @@ const subagentFailureNoticeBySession = new Map<string, string>();
 let pendingDelegatedLabel = "";
 let pendingRequesterLabel = "";
 let pendingDelegatedUntil = 0;
+let lastConfigSource: "api" | "file" | "empty" | "" = "";
 
 const CONFIG_PATH = join(
   homedir(),
@@ -64,6 +65,7 @@ const CONFIG_PATH = join(
   "smart-model-router",
   "config.json",
 );
+const OPENCLAW_CONFIG_PATH = join(homedir(), ".openclaw", "openclaw.json");
 
 // ── Parse Separator ─────────────────────────────────────────────────────────
 
@@ -403,7 +405,8 @@ function clearSessionState(key: string): void {
 
 function getDefaultLabel(api: any, aliases: Record<string, ModelRef>): string {
   try {
-    const primary = api.config?.agents?.defaults?.model?.primary;
+    const runtimeConfig = getRuntimeConfig(api);
+    const primary = runtimeConfig?.agents?.defaults?.model?.primary;
     if (primary && typeof primary === "string") {
       const slashIdx = primary.indexOf("/");
       const defaultRef: ModelRef = slashIdx !== -1
@@ -413,6 +416,39 @@ function getDefaultLabel(api: any, aliases: Record<string, ModelRef>): string {
     }
   } catch {}
   return "default";
+}
+
+function hasObjectKeys(value: unknown): boolean {
+  return Boolean(value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0);
+}
+
+function getRuntimeConfig(api: any): any {
+  const liveConfig = api?.config;
+  if (hasObjectKeys(liveConfig)) {
+    if (lastConfigSource !== "api") {
+      dbg("config source: api.config");
+      lastConfigSource = "api";
+    }
+    return liveConfig;
+  }
+
+  try {
+    const text = readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
+    const parsed = JSON.parse(text);
+    if (hasObjectKeys(parsed)) {
+      if (lastConfigSource !== "file") {
+        dbg(`config source: file fallback=${OPENCLAW_CONFIG_PATH}`);
+        lastConfigSource = "file";
+      }
+      return parsed;
+    }
+  } catch {}
+
+  if (lastConfigSource !== "empty") {
+    dbg("config source: empty (api.config empty and file fallback unavailable)");
+    lastConfigSource = "empty";
+  }
+  return liveConfig ?? {};
 }
 
 // ── Plugin Entry ────────────────────────────────────────────────────────────
@@ -433,9 +469,12 @@ export default {
     // ── Helper: get available models from config ────────────────────
     function getModels(): string[] {
       try {
-        const cfg = api.config;
+        const cfg = getRuntimeConfig(api);
         const providers = cfg?.models?.providers;
-        if (!providers || typeof providers !== "object") return [];
+        if (!providers || typeof providers !== "object") {
+          dbg("getModels: providers missing or invalid");
+          return [];
+        }
         const models: string[] = [];
         for (const [providerName, providerCfg] of Object.entries(providers)) {
           const p = providerCfg as any;
@@ -445,15 +484,18 @@ export default {
             }
           }
         }
+        dbg(`getModels: count=${models.length} sample=${models.slice(0, 5).join(",") || "none"}`);
         return models;
       } catch {
+        dbg("getModels: exception");
         return [];
       }
     }
 
     function getBuiltinAliases(): Record<string, ModelRef> {
       try {
-        const models = api.config?.agents?.defaults?.models;
+        const cfg = getRuntimeConfig(api);
+        const models = cfg?.agents?.defaults?.models;
         if (!models || typeof models !== "object") return {};
         const aliases: Record<string, ModelRef> = {};
         for (const [key, entry] of Object.entries(models as Record<string, any>)) {
